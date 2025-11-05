@@ -17,11 +17,11 @@ def _requests_session_with_retries(retries=3, backoff=0.3, status_forcelist=(500
     s.mount("http://", adapter)
     return s
 
-def grade_submission(api_key, submission_text=None, image_bytes=None, image_filename=None, timeout=10):
+def grade_submission(api_key, submission_text=None, image_bytes=None, image_filename=None, model_image_bytes=None, model_image_filename=None, timeout=10):
     """
-    Gemini APIを利用して採点を行う関数
-    - 画像が与えられた場合は multipart/form-data で送信
-    - multipart が失敗した場合は base64 を JSON に入れて再試行
+    Gemini APIを利用して採点を行う関数（提出画像と模範解答画像の両対応）
+    - 画像が与えられた場合は multipart/form-data で送信（両方送れる）
+    - multipart が失敗した場合は base64 を JSON に入れて再試行（両方対応）
     - タイムアウト・リトライ・JSONパースの保護を追加
     """
     headers = {
@@ -30,9 +30,14 @@ def grade_submission(api_key, submission_text=None, image_bytes=None, image_file
     session = _requests_session_with_retries()
 
     try:
-        if image_bytes:
-            content_type = mimetypes.guess_type(image_filename or "")[0] or "application/octet-stream"
-            files = {"image": (image_filename or "upload", image_bytes, content_type)}
+        if image_bytes or model_image_bytes:
+            files = {}
+            if image_bytes:
+                content_type = mimetypes.guess_type(image_filename or "")[0] or "application/octet-stream"
+                files["submission_image"] = (image_filename or "submission", image_bytes, content_type)
+            if model_image_bytes:
+                content_type = mimetypes.guess_type(model_image_filename or "")[0] or "application/octet-stream"
+                files["model_image"] = (model_image_filename or "model", model_image_bytes, content_type)
             # requests が Content-Type を自動設定するので headers から Content-Type は外す
             resp = session.post(GEMINI_API_URL, files=files, headers=headers, timeout=timeout)
         else:
@@ -49,11 +54,16 @@ def grade_submission(api_key, submission_text=None, image_bytes=None, image_file
     except requests.exceptions.RequestException as e:
         logging.exception("grade_submission failed")
         # 画像送信で失敗した場合は base64 JSON でフォールバックを試みる
-        if image_bytes:
+        if image_bytes or model_image_bytes:
             try:
-                b64 = base64.b64encode(image_bytes).decode("ascii")
                 headers["Content-Type"] = "application/json"
-                payload = {"image_base64": b64, "filename": image_filename}
+                payload = {}
+                if image_bytes:
+                    payload["image_base64"] = base64.b64encode(image_bytes).decode("ascii")
+                    payload["filename"] = image_filename
+                if model_image_bytes:
+                    payload["model_image_base64"] = base64.b64encode(model_image_bytes).decode("ascii")
+                    payload["model_filename"] = model_image_filename
                 if submission_text:
                     payload["submission"] = submission_text
                 resp = session.post(GEMINI_API_URL, json=payload, headers=headers, timeout=timeout)
@@ -69,7 +79,7 @@ def grade_submission(api_key, submission_text=None, image_bytes=None, image_file
 
 def main():
     st.title("自動採点アプリ（画像対応）")
-    st.write("画像をアップロードして採点します。")
+    st.write("提出画像と模範解答画像を指定して採点します。")
 
     # APIキー取得: st.secrets から、無ければ入力欄で受け付ける
     api_key = st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else None
@@ -77,28 +87,40 @@ def main():
     if not api_key and api_key_input:
         api_key = api_key_input
 
-    # 画像アップロードを受け付ける（必須）
-    uploaded_image = st.file_uploader("画像をアップロード（png, jpg, jpeg, bmp, gif, tiff）", type=["png","jpg","jpeg","bmp","gif","tiff"])
+    # 提出画像アップロード（必須）
+    uploaded_image = st.file_uploader("提出画像をアップロード（png, jpg, jpeg, bmp, gif, tiff）", type=["png","jpg","jpeg","bmp","gif","tiff"], key="submission_uploader")
     image_bytes = None
     image_filename = None
     if uploaded_image:
         try:
             image_bytes = uploaded_image.read()
             image_filename = uploaded_image.name
-            st.image(image_bytes, caption=image_filename, use_column_width=True)
+            st.image(image_bytes, caption="提出: " + image_filename, use_column_width=True)
         except Exception:
-            st.error("アップロード画像の読み取りに失敗しました。")
+            st.error("提出画像の読み取りに失敗しました。")
+
+    # 模範解答画像アップロード（任意）
+    uploaded_model = st.file_uploader("模範解答画像をアップロード（任意）", type=["png","jpg","jpeg","bmp","gif","tiff"], key="model_uploader")
+    model_image_bytes = None
+    model_image_filename = None
+    if uploaded_model:
+        try:
+            model_image_bytes = uploaded_model.read()
+            model_image_filename = uploaded_model.name
+            st.image(model_image_bytes, caption="模範解答: " + model_image_filename, use_column_width=True)
+        except Exception:
+            st.error("模範解答画像の読み取りに失敗しました。")
 
     if st.button("採点を実行"):
         if not image_bytes:
-            st.error("画像をアップロードしてください。")
+            st.error("提出画像をアップロードしてください。")
             return
         if not api_key:
             st.error("API キーが必要です。`.streamlit/secrets.toml` に GEMINI_API_KEY を設定するか入力してください。")
             return
 
         with st.spinner("採点中..."):
-            result = grade_submission(api_key, submission_text=None, image_bytes=image_bytes, image_filename=image_filename)
+            result = grade_submission(api_key, submission_text=None, image_bytes=image_bytes, image_filename=image_filename, model_image_bytes=model_image_bytes, model_image_filename=model_image_filename)
 
         if isinstance(result, dict) and "error" in result:
             st.error(f"エラーが発生しました: {result['error']}")
