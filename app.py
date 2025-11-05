@@ -69,7 +69,7 @@ def grade_submission(api_key, submission_text=None, image_bytes=None, image_file
 
 def main():
     st.title("自動採点アプリ（画像対応）")
-    st.write("画像またはテキストで提出物をアップロードして採点します。")
+    st.write("画像をアップロードして採点します。")
 
     # APIキー取得: st.secrets から、無ければ入力欄で受け付ける
     api_key = st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else None
@@ -77,7 +77,7 @@ def main():
     if not api_key and api_key_input:
         api_key = api_key_input
 
-    # 画像アップロードを受け付ける（優先）
+    # 画像アップロードを受け付ける（必須）
     uploaded_image = st.file_uploader("画像をアップロード（png, jpg, jpeg, bmp, gif, tiff）", type=["png","jpg","jpeg","bmp","gif","tiff"])
     image_bytes = None
     image_filename = None
@@ -89,26 +89,16 @@ def main():
         except Exception:
             st.error("アップロード画像の読み取りに失敗しました。")
 
-    # テキスト入力（画像がない場合の採点対象、または補足）
-    submission_text = st.text_area("採点対象のテキスト（画像がある場合は補足として利用）", height=200)
-    uploaded_txt = st.file_uploader("テキストファイルをアップロード（txt）", type=["txt"])
-    if uploaded_txt:
-        try:
-            text = uploaded_txt.read().decode("utf-8")
-            submission_text = (submission_text + "\n\n" + text).strip() if submission_text else text
-        except Exception:
-            st.error("アップロードファイルの読み取りに失敗しました（UTF-8を想定）")
-
     if st.button("採点を実行"):
-        if not image_bytes and (not submission_text or not submission_text.strip()):
-            st.error("画像かテキストのいずれかを入力してください。")
+        if not image_bytes:
+            st.error("画像をアップロードしてください。")
             return
         if not api_key:
             st.error("API キーが必要です。`.streamlit/secrets.toml` に GEMINI_API_KEY を設定するか入力してください。")
             return
 
         with st.spinner("採点中..."):
-            result = grade_submission(api_key, submission_text=(submission_text or None), image_bytes=image_bytes, image_filename=image_filename)
+            result = grade_submission(api_key, submission_text=None, image_bytes=image_bytes, image_filename=image_filename)
 
         if isinstance(result, dict) and "error" in result:
             st.error(f"エラーが発生しました: {result['error']}")
